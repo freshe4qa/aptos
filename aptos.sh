@@ -1,4 +1,17 @@
 #!/bin/bash
+exists()
+{
+  command -v "$1" >/dev/null 2>&1
+}
+if exists curl; then
+echo ''
+else
+  sudo apt update && sudo apt install curl -y < "/dev/null"
+fi
+bash_profile=$HOME/.bash_profile
+if [ -f "$bash_profile" ]; then
+    . $HOME/.bash_profile
+fi
 echo -e '\e[40m\e[91m'
 echo -e '  ____                  _                    '
 echo -e ' / ___|_ __ _   _ _ __ | |_ ___  _ __        '
@@ -14,75 +27,56 @@ echo -e '/_/   \_\___\__ _|\__ _|\___|_| |_| |_|\__  |'
 echo -e '                                       |___/ '
 echo -e '\e[0m'
 sleep 2
+if [ ! $APTOS_NODENAME ]; then
+read -p "Enter node name: " APTOS_NODENAME
+echo 'export APTOS_NODENAME='\"${APTOS_NODENAME}\" >> $HOME/.bash_profile
+fi
+echo 'source $HOME/.bashrc' >> $HOME/.bash_profile
+. $HOME/.bash_profile
 
-#set vars
-echo "export WORKSPACE=testnet" >> $HOME/.bash_profile
-echo "export PUBLIC_IP=$(curl -s ifconfig.me)" >> $HOME/.bash_profile
-source $HOME/.bash_profile
-
-#update package
-sudo apt update && sudo apt upgrade -y
-
-#install dependencies
-sudo apt-get install jq unzip -y
-
+apt update && apt install git sudo unzip wget -y
 #install docker
-sudo apt-get install ca-certificates curl gnupg lsb-release -y
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-sudo apt-get update
-sudo apt-get install docker-ce docker-ce-cli containerd.io -y
-
-#install docker compose
-mkdir -p ~/.docker/cli-plugins/
-curl -SL https://github.com/docker/compose/releases/download/v2.2.3/docker-compose-linux-x86_64 -o ~/.docker/cli-plugins/docker-compose
-chmod +x ~/.docker/cli-plugins/docker-compose
-sudo chown $USER /var/run/docker.sock
-
-#download aptos cli
+curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
+#install docker-compose
+curl -SL https://github.com/docker/compose/releases/download/v2.5.0/docker-compose-linux-x86_64 -o /usr/local/bin/docker-compose
+sudo chmod +x /usr/local/bin/docker-compose
+sudo ln -s /usr/local/bin/docker-compose /usr/bin/docker-compose
+ 
+#install aptos
 wget -qO aptos-cli.zip https://github.com/aptos-labs/aptos-core/releases/download/aptos-cli-v0.1.1/aptos-cli-0.1.1-Ubuntu-x86_64.zip
-unzip aptos-cli.zip -d /usr/local/bin
-chmod +x /usr/local/bin/aptos
-rm aptos-cli.zip
+unzip -o aptos-cli.zip
+chmod +x aptos
+mv aptos /usr/local/bin 
+ 
+#create folder,download config    
+IPADDR=$(curl ifconfig.me) 
+sleep 2   
+mkdir -p $HOME/.aptos
+cd $HOME/.aptos
+wget https://raw.githubusercontent.com/aptos-labs/aptos-core/main/docker/compose/aptos-node/docker-compose.yaml
+wget https://raw.githubusercontent.com/aptos-labs/aptos-core/main/docker/compose/aptos-node/validator.yaml
+wget https://raw.githubusercontent.com/aptos-labs/aptos-core/main/docker/compose/aptos-node/fullnode.yaml
 
-#create directory
-mkdir ~/$WORKSPACE && cd ~/$WORKSPACE
+aptos genesis generate-keys --output-dir $HOME/.aptos
 
-#download config files
-wget -qO docker-compose.yaml https://raw.githubusercontent.com/aptos-labs/aptos-core/main/docker/compose/aptos-node/docker-compose.yaml
-wget -qO validator.yaml https://raw.githubusercontent.com/aptos-labs/aptos-core/main/docker/compose/aptos-node/validator.yaml
-wget -qO fullnode.yaml https://raw.githubusercontent.com/aptos-labs/aptos-core/main/docker/compose/aptos-node/fullnode.yaml
-
-#generate keys
-aptos genesis generate-keys --output-dir ~/$WORKSPACE
-
-#configure validator
 aptos genesis set-validator-configuration \
-  --keys-dir ~/$WORKSPACE --local-repository-dir ~/$WORKSPACE \
-  --username aptosbot \
-  --validator-host $PUBLIC_IP:6180 \
-  --full-node-host $PUBLIC_IP:6182
-  
-  #generate root keys
-mkdir keys
-aptos key generate --output-file keys/root
-
-#create layot files
-tee layout.yaml > /dev/null <<EOF
----
-root_key: "0x5243ca72b0766d9e9cbf2debf6153443b01a1e0e6d086c7ea206eaf6f8043956"
+    --keys-dir $HOME/.aptos --local-repository-dir $HOME/.aptos \
+    --username $APTOS_NODENAME \
+    --validator-host $IPADDR:6180 \
+    --full-node-host $IPADDR:6182
+    
+aptos key generate --output-file root_key.txt
+KEYTXT=$(cat ~/.aptos/root_key.txt.pub) 
+KEY="0x"$KEYTXT 
+echo "---
+root_key: \"$KEY\"
 users:
-  - aptosbot
-chain_id: 23
-EOF
-
-#download aptos framework
-wget -qO framework.zip https://github.com/aptos-labs/aptos-core/releases/download/aptos-framework-v0.1.0/framework.zip
-unzip framework.zip
-rm framework.zip
-
-#compile genesis blob and waypoint
-aptos genesis generate-genesis --local-repository-dir ~/$WORKSPACE --output-dir ~/$WORKSPACE
-
-#run docker compose
+  - $APTOS_NODENAME
+chain_id: 23" >layout.yaml
+    
+wget https://github.com/aptos-labs/aptos-core/releases/download/aptos-framework-v0.1.0/framework.zip
+unzip -o framework.zip
+aptos genesis generate-genesis --local-repository-dir $HOME/.aptos --output-dir $HOME/.aptos
+sleep 2
 docker compose up -d
